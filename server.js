@@ -7,33 +7,60 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const fs = require('fs');
+const path = require('path'); // Added for better path handling
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
 
-if (!fs.existsSync('./uploads')) fs.mkdirSync('./uploads');
+// Configure Socket.io with CORS (important for production)
+const io = new Server(server, {
+  cors: {
+    origin: "*", 
+    methods: ["GET", "POST"]
+  }
+});
+
+// Use dynamic port for Render
+const PORT = process.env.PORT || 3000;
+
+// Ensure uploads directory exists
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
 
 app.use(express.json());
 app.use(express.static('public'));
-app.use('/uploads', express.static('uploads'));
+app.use('/uploads', express.static(uploadDir));
 
 const User = require('./models/User');
 const Message = require('./models/Message');
 
-mongoose.connect(process.env.MONGO_URI).then(() => console.log(' MongoDB Connected'));
+// Improved MongoDB connection with error handling
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('✅ MongoDB Connected'))
+  .catch((err) => {
+    console.error('❌ MongoDB Connection Error:', err);
+    process.exit(1); // Stop the server if DB fails
+  });
 
 const upload = multer({ storage: multer.diskStorage({
   destination: 'uploads/',
   filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 })});
 
+// --- ROUTES ---
+
 app.post('/register', async (req, res) => {
-  const { username, password } = req.body;
-  const hashed = await bcrypt.hash(password, 10);
-  const user = new User({ username, password: hashed });
-  await user.save();
-  res.json({ success: true });
+  try {
+    const { username, password } = req.body;
+    const hashed = await bcrypt.hash(password, 10);
+    const user = new User({ username, password: hashed });
+    await user.save();
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Registration failed" });
+  }
 });
 
 app.post('/login', async (req, res) => {
@@ -42,12 +69,21 @@ app.post('/login', async (req, res) => {
   if (user && await bcrypt.compare(password, user.password)) {
     const token = jwt.sign({ username: user.username }, process.env.JWT_SECRET);
     res.json({ token, username: user.username });
-  } else res.status(401).send();
+  } else {
+    res.status(401).json({ error: "Invalid credentials" });
+  }
 });
 
 app.post('/upload', upload.single('file'), (req, res) => {
-  res.json({ fileUrl: `/uploads/${req.file.filename}`, fileName: req.file.originalname, fileType: req.file.mimetype });
+  if (!req.file) return res.status(400).send('No file uploaded.');
+  res.json({ 
+    fileUrl: `/uploads/${req.file.filename}`, 
+    fileName: req.file.originalname, 
+    fileType: req.file.mimetype 
+  });
 });
+
+// --- SOCKET LOGIC ---
 
 const online = new Map();
 
@@ -71,7 +107,9 @@ io.on('connection', (socket) => {
       
       const history = await Message.find({ room: currentRoom }).sort({ createdAt: 1 }).limit(50);
       socket.emit('history', history);
-    } catch (e) { socket.disconnect(); }
+    } catch (e) { 
+      socket.disconnect(); 
+    }
   });
 
   socket.on('chatMessage', async (text) => {
@@ -90,12 +128,14 @@ io.on('connection', (socket) => {
 
   socket.on('messageRead', async (data) => {
     if (!user || !currentRoom) return;
-    const msg = await Message.findById(data.msgId);
-    if (msg && !msg.seenBy.includes(user)) {
-      msg.seenBy.push(user);
-      await msg.save();
-      io.to(currentRoom).emit('readUpdate', { msgId: data.msgId, seenBy: msg.seenBy });
-    }
+    try {
+        const msg = await Message.findById(data.msgId);
+        if (msg && !msg.seenBy.includes(user)) {
+          msg.seenBy.push(user);
+          await msg.save();
+          io.to(currentRoom).emit('readUpdate', { msgId: data.msgId, seenBy: msg.seenBy });
+        }
+    } catch (err) { console.error(err); }
   });
 
   socket.on('typing', (d) => {
@@ -112,4 +152,5 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(3000, () => console.log(' Server on 3000'));
+// Start the server on the dynamic Port
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
