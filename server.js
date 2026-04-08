@@ -7,12 +7,12 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const fs = require('fs');
-const path = require('path'); // Added for better path handling
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 
-// Configure Socket.io with CORS (important for production)
+// 1. Socket.io Configuration with CORS
 const io = new Server(server, {
   cors: {
     origin: "*", 
@@ -20,57 +20,77 @@ const io = new Server(server, {
   }
 });
 
-// Use dynamic port for Render
 const PORT = process.env.PORT || 3000;
 
-// Ensure uploads directory exists
+// 2. Folder Setup
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+// 3. Middleware
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(uploadDir));
 
+// 4. Models (CRITICAL: Ensure these match your actual file names in the 'models' folder)
 const User = require('./models/User');
 const Message = require('./models/Message');
 
-// Improved MongoDB connection with error handling
+// 5. MongoDB Connection
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('✅ MongoDB Connected'))
+  .then(() => console.log('✅ MongoDB Connected Successfully'))
   .catch((err) => {
-    console.error('❌ MongoDB Connection Error:', err);
-    process.exit(1); // Stop the server if DB fails
+    console.error('❌ MongoDB Connection Error:', err.message);
   });
 
+// 6. File Upload Config
 const upload = multer({ storage: multer.diskStorage({
   destination: 'uploads/',
   filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 })});
 
-// --- ROUTES ---
+// --- HTTP ROUTES ---
 
 app.post('/register', async (req, res) => {
   try {
     const { username, password } = req.body;
+    if (!username || !password) {
+        return res.status(400).json({ error: "Username and password required" });
+    }
+
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+        return res.status(400).json({ error: "Username already exists" });
+    }
+
     const hashed = await bcrypt.hash(password, 10);
     const user = new User({ username, password: hashed });
     await user.save();
+    
+    console.log(`👤 New user created: ${username}`);
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: "Registration failed" });
+    console.error("❌ Registration Error:", error.message);
+    res.status(500).json({ error: "Server error during registration" });
   }
 });
 
 app.post('/login', async (req, res) => {
-  const { username, password } = req.body;
-  const user = await User.findOne({ username });
-  if (user && await bcrypt.compare(password, user.password)) {
-    const token = jwt.sign({ username: user.username }, process.env.JWT_SECRET);
-    res.json({ token, username: user.username });
-  } else {
-    res.status(401).json({ error: "Invalid credentials" });
+  try {
+    const { username, password } = req.body;
+    const user = await User.findOne({ username });
+    
+    if (user && await bcrypt.compare(password, user.password)) {
+      const token = jwt.sign({ username: user.username }, process.env.JWT_SECRET, { expiresIn: '24h' });
+      res.json({ token, username: user.username });
+    } else {
+      res.status(401).json({ error: "Invalid username or password" });
+    }
+  } catch (error) {
+    console.error("❌ Login Error:", error.message);
+    res.status(500).json({ error: "Server error during login" });
   }
 });
 
@@ -83,7 +103,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
   });
 });
 
-// --- SOCKET LOGIC ---
+// --- SOCKET.IO REAL-TIME LOGIC ---
 
 const online = new Map();
 
@@ -93,21 +113,26 @@ io.on('connection', (socket) => {
 
   socket.on('auth', async (data) => {
     try {
+      if (!data.token) return;
       const decoded = jwt.verify(data.token, process.env.JWT_SECRET);
       user = decoded.username;
-      currentRoom = data.room.toLowerCase();
+      currentRoom = data.room ? data.room.toLowerCase() : 'general';
+      
       socket.join(currentRoom);
       
       if (!online.has(currentRoom)) online.set(currentRoom, new Set());
       online.get(currentRoom).add(user);
       
+      // Notify room
       const joinMsg = new Message({ room: currentRoom, user: 'System', text: `${user} joined`, type: 'system' });
       io.to(currentRoom).emit('message', joinMsg);
       io.to(currentRoom).emit('onlineUsers', Array.from(online.get(currentRoom)));
       
+      // Load history
       const history = await Message.find({ room: currentRoom }).sort({ createdAt: 1 }).limit(50);
       socket.emit('history', history);
     } catch (e) { 
+      console.error("Auth Error:", e.message);
       socket.disconnect(); 
     }
   });
@@ -126,18 +151,6 @@ io.on('connection', (socket) => {
     io.to(currentRoom).emit('message', msg);
   });
 
-  socket.on('messageRead', async (data) => {
-    if (!user || !currentRoom) return;
-    try {
-        const msg = await Message.findById(data.msgId);
-        if (msg && !msg.seenBy.includes(user)) {
-          msg.seenBy.push(user);
-          await msg.save();
-          io.to(currentRoom).emit('readUpdate', { msgId: data.msgId, seenBy: msg.seenBy });
-        }
-    } catch (err) { console.error(err); }
-  });
-
   socket.on('typing', (d) => {
     if (currentRoom) socket.to(currentRoom).emit('displayTyping', { user, isTyping: d.isTyping });
   });
@@ -145,12 +158,12 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     if (user && currentRoom && online.has(currentRoom)) {
       online.get(currentRoom).delete(user);
-      const leaveMsg = new Message({ room: currentRoom, user: 'System', text: `${user} left`, type: 'system' });
-      io.to(currentRoom).emit('message', leaveMsg);
       io.to(currentRoom).emit('onlineUsers', Array.from(online.get(currentRoom)));
     }
   });
 });
 
-// Start the server on the dynamic Port
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// 7. Start Server
+server.listen(PORT, () => {
+  console.log(`🚀 Server is live on port ${PORT}`);
+});
