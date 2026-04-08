@@ -1,169 +1,166 @@
-require('dotenv').config();
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const mongoose = require('mongoose');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
-const multer = require('multer');
-const fs = require('fs');
-const path = require('path');
+const socket = io();
+let token = localStorage.getItem('token');
+let username = localStorage.getItem('username') || ''; // Store username too
+let currentRoom = 'Public Room Only';
 
-const app = express();
-const server = http.createServer(app);
+const messagesDiv = document.getElementById('messages');
+const onlineUsersDiv = document.getElementById('onlineUsers');
+const typingIndicator = document.getElementById('typingIndicator');
+const roomNameEl = document.getElementById('roomName');
+const usernameDisplay = document.getElementById('usernameDisplay');
+const authModal = document.getElementById('authModal');
 
-// 1. Socket.io Configuration with CORS
-const io = new Server(server, {
-  cors: {
-    origin: "*", 
-    methods: ["GET", "POST"]
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-
-// 2. Folder Setup
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+// Dark Mode Toggle
+function toggleTheme() {
+    document.documentElement.classList.toggle('dark');
+    localStorage.theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
 }
 
-// 3. Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, 'public')));
-app.use('/uploads', express.static(uploadDir));
+// Auth Modal
+function switchTab(tab) {
+    document.getElementById('loginForm').classList.toggle('hidden', tab !== 0);
+    document.getElementById('registerForm').classList.toggle('hidden', tab !== 1);
+}
 
-// 4. Models (CRITICAL: Ensure these match your actual file names in the 'models' folder)
-const User = require('./models/User');
-const Message = require('./models/Message');
+async function register() {
+    const u = document.getElementById('regUsername').value.trim();
+    const p = document.getElementById('regPassword').value;
+    if (!u || !p) return alert("Please fill all fields");
 
-// 5. MongoDB Connection
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('✅ MongoDB Connected Successfully'))
-  .catch((err) => {
-    console.error('❌ MongoDB Connection Error:', err.message);
-  });
-
-// 6. File Upload Config
-const upload = multer({ storage: multer.diskStorage({
-  destination: 'uploads/',
-  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
-})});
-
-// --- HTTP ROUTES ---
-
-app.post('/register', async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    if (!username || !password) {
-        return res.status(400).json({ error: "Username and password required" });
-    }
-
-    const existingUser = await User.findOne({ username });
-    if (existingUser) {
-        return res.status(400).json({ error: "Username already exists" });
-    }
-
-    const hashed = await bcrypt.hash(password, 10);
-    const user = new User({ username, password: hashed });
-    await user.save();
-    
-    console.log(`👤 New user created: ${username}`);
-    res.json({ success: true });
-  } catch (error) {
-    console.error("❌ Registration Error:", error.message);
-    res.status(500).json({ error: "Server error during registration" });
-  }
-});
-
-app.post('/login', async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    const user = await User.findOne({ username });
-    
-    if (user && await bcrypt.compare(password, user.password)) {
-      const token = jwt.sign({ username: user.username }, process.env.JWT_SECRET, { expiresIn: '24h' });
-      res.json({ token, username: user.username });
+    const res = await fetch('/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p })
+    });
+    const data = await res.json();
+    if (data.success) {
+        alert("Account created! Please login.");
+        switchTab(0);
     } else {
-      res.status(401).json({ error: "Invalid username or password" });
+        alert(data.error || "Registration failed");
     }
-  } catch (error) {
-    console.error("❌ Login Error:", error.message);
-    res.status(500).json({ error: "Server error during login" });
-  }
+}
+
+async function login() {
+    const u = document.getElementById('loginUsername').value.trim();
+    const p = document.getElementById('loginPassword').value;
+    if (!u || !p) return alert("Please fill all fields");
+
+    const res = await fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p })
+    });
+    
+    if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('username', data.username);
+        token = data.token;
+        username = data.username;
+        authModal.classList.add('hidden');
+        usernameDisplay.textContent = `👤 ${username}`;
+        socket.emit('auth', { token, room: currentRoom });
+    } else {
+        alert("Invalid username or password");
+    }
+}
+
+function logout() {
+    if (confirm("Logout?")) {
+        localStorage.clear();
+        location.reload();
+    }
+}
+
+// Show modal if not logged in
+if (!token) {
+    authModal.classList.remove('hidden');
+} else {
+    socket.emit('auth', { token, room: currentRoom });
+    usernameDisplay.textContent = `👤 ${username || 'User'}`;
+}
+
+// Chat Functions
+function sendMessage() {
+    const text = document.getElementById('messageInput').value.trim();
+    if (text) {
+        socket.emit('chatMessage', text);
+        document.getElementById('messageInput').value = '';
+    }
+}
+
+function addMessage(msg) {
+    // --- START SYSTEM MESSAGE LOGIC ---
+    if (msg.type === 'system' || msg.user === 'System') {
+        const div = document.createElement('div');
+        div.className = "flex justify-center my-3";
+        div.innerHTML = `<span class="bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-4 py-1 rounded-full text-xs italic border border-gray-200 dark:border-gray-700">
+            ${msg.text}
+        </span>`;
+        messagesDiv.appendChild(div);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        return; // Stop here
+    }
+    // --- END SYSTEM MESSAGE LOGIC ---
+
+    const time = new Date(msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const avatarUrl = msg.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(msg.user)}&background=random`;
+
+    const isMe = msg.user === username;
+    const div = document.createElement('div');
+    div.className = `flex gap-3 mb-4 ${isMe ? 'flex-row-reverse' : ''}`;
+    
+    div.innerHTML = `
+        <img src="${avatarUrl}" class="w-8 h-8 rounded-full self-end mb-1 shadow-sm">
+        <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[70%]">
+            <div class="flex items-center gap-2 mb-1 text-[10px] text-gray-500 uppercase tracking-wider">
+                <span>${msg.user}</span>
+                <span>•</span>
+                <span>${time}</span>
+            </div>
+            <div class="${isMe ? 'bg-blue-600 text-white rounded-l-2xl rounded-tr-2xl' : 'bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-r-2xl rounded-tl-2xl shadow-sm'} px-4 py-2 text-sm">
+                ${msg.type === 'text' ? msg.text : 
+                  msg.fileType && msg.fileType.startsWith('image') ? `<img src="${msg.fileUrl}" class="rounded-lg max-w-full">` :
+                  `<video src="${msg.fileUrl}" controls class="rounded-lg max-w-full"></video>`}
+            </div>
+        </div>
+    `;
+    messagesDiv.appendChild(div);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function updateOnlineUsers(users) {
+    onlineUsersDiv.innerHTML = users.map(u => `
+        <div class="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+            <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">${u}</span>
+        </div>
+    `).join('');
+}
+
+// Socket Events
+socket.on('history', (msgs) => { messagesDiv.innerHTML = ''; msgs.forEach(addMessage); });
+socket.on('message', addMessage);
+socket.on('onlineUsers', updateOnlineUsers);
+
+socket.on('displayTyping', (data) => {
+    typingIndicator.textContent = data.isTyping ? `${data.user} is typing...` : '';
 });
 
-app.post('/upload', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).send('No file uploaded.');
-  res.json({ 
-    fileUrl: `/uploads/${req.file.filename}`, 
-    fileName: req.file.originalname, 
-    fileType: req.file.mimetype 
-  });
+socket.on('authError', () => {
+    localStorage.clear();
+    authModal.classList.remove('hidden');
 });
 
-// --- SOCKET.IO REAL-TIME LOGIC ---
-
-const online = new Map();
-
-io.on('connection', (socket) => {
-  let user = null;
-  let currentRoom = null;
-
-  socket.on('auth', async (data) => {
-    try {
-      if (!data.token) return;
-      const decoded = jwt.verify(data.token, process.env.JWT_SECRET);
-      user = decoded.username;
-      currentRoom = data.room ? data.room.toLowerCase() : 'general';
-      
-      socket.join(currentRoom);
-      
-      if (!online.has(currentRoom)) online.set(currentRoom, new Set());
-      online.get(currentRoom).add(user);
-      
-      // Notify room
-      const joinMsg = new Message({ room: currentRoom, user: 'System', text: `${user} joined`, type: 'system' });
-      io.to(currentRoom).emit('message', joinMsg);
-      io.to(currentRoom).emit('onlineUsers', Array.from(online.get(currentRoom)));
-      
-      // Load history
-      const history = await Message.find({ room: currentRoom }).sort({ createdAt: 1 }).limit(50);
-      socket.emit('history', history);
-    } catch (e) { 
-      console.error("Auth Error:", e.message);
-      socket.disconnect(); 
-    }
-  });
-
-  socket.on('chatMessage', async (text) => {
-    if (!user || !currentRoom) return;
-    const msg = new Message({ room: currentRoom, user, text, type: 'text', seenBy: [user] });
-    await msg.save();
-    io.to(currentRoom).emit('message', msg);
-  });
-
-  socket.on('fileMessage', async (data) => {
-    if (!user || !currentRoom) return;
-    const msg = new Message({ room: currentRoom, user, ...data, type: 'file', seenBy: [user] });
-    await msg.save();
-    io.to(currentRoom).emit('message', msg);
-  });
-
-  socket.on('typing', (d) => {
-    if (currentRoom) socket.to(currentRoom).emit('displayTyping', { user, isTyping: d.isTyping });
-  });
-
-  socket.on('disconnect', () => {
-    if (user && currentRoom && online.has(currentRoom)) {
-      online.get(currentRoom).delete(user);
-      io.to(currentRoom).emit('onlineUsers', Array.from(online.get(currentRoom)));
-    }
-  });
+// Typing indicator
+let typingTimeout;
+document.getElementById('messageInput').addEventListener('input', () => {
+    socket.emit('typing', { isTyping: true });
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => socket.emit('typing', { isTyping: false }), 1500);
 });
 
-// 7. Start Server
-server.listen(PORT, () => {
-  console.log(`🚀 Server is live on port ${PORT}`);
+document.getElementById('messageInput').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') sendMessage();
 });

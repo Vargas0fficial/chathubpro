@@ -1,6 +1,6 @@
 const socket = io();
 let token = localStorage.getItem('token');
-let username = '';
+let username = localStorage.getItem('username') || ''; // Store username too
 let currentRoom = 'Public Room Only';
 
 const messagesDiv = document.getElementById('messages');
@@ -12,177 +12,155 @@ const authModal = document.getElementById('authModal');
 
 // Dark Mode Toggle
 function toggleTheme() {
-  if (document.documentElement.classList.contains('dark')) {
-    document.documentElement.classList.remove('dark');
-    localStorage.theme = 'light';
-  } else {
-    document.documentElement.classList.add('dark');
-    localStorage.theme = 'dark';
-  }
+    document.documentElement.classList.toggle('dark');
+    localStorage.theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
 }
 
 // Auth Modal
 function switchTab(tab) {
-  document.getElementById('loginForm').classList.toggle('hidden', tab !== 0);
-  document.getElementById('registerForm').classList.toggle('hidden', tab !== 1);
+    document.getElementById('loginForm').classList.toggle('hidden', tab !== 0);
+    document.getElementById('registerForm').classList.toggle('hidden', tab !== 1);
 }
 
 async function register() {
-  const u = document.getElementById('regUsername').value.trim();
-  const p = document.getElementById('regPassword').value;
-  if (!u || !p) return alert("Please fill all fields");
+    const u = document.getElementById('regUsername').value.trim();
+    const p = document.getElementById('regPassword').value;
+    if (!u || !p) return alert("Please fill all fields");
 
-  const res = await fetch('/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: u, password: p })
-  });
-  const data = await res.json();
-  if (data.success) {
-    alert("Account created! Please login.");
-    switchTab(0);
-  } else {
-    alert(data.error || "Registration failed");
-  }
+    const res = await fetch('/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p })
+    });
+    const data = await res.json();
+    if (data.success) {
+        alert("Account created! Please login.");
+        switchTab(0);
+    } else {
+        alert(data.error || "Registration failed");
+    }
 }
 
 async function login() {
-  const u = document.getElementById('loginUsername').value.trim();
-  const p = document.getElementById('loginPassword').value;
-  if (!u || !p) return alert("Please fill all fields");
+    const u = document.getElementById('loginUsername').value.trim();
+    const p = document.getElementById('loginPassword').value;
+    if (!u || !p) return alert("Please fill all fields");
 
-  const res = await fetch('/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: u, password: p })
-  });
-  const data = await res.json();
-
-  if (data.token) {
-    localStorage.setItem('token', data.token);
-    token = data.token;
-    username = data.username;
-    authModal.classList.add('hidden');
-    usernameDisplay.textContent = `👤 ${username}`;
-    socket.emit('auth', token);
-  } else {
-    alert(data.error || "Login failed");
-  }
+    const res = await fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p })
+    });
+    
+    if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('username', data.username);
+        token = data.token;
+        username = data.username;
+        authModal.classList.add('hidden');
+        usernameDisplay.textContent = `👤 ${username}`;
+        socket.emit('auth', { token, room: currentRoom });
+    } else {
+        alert("Invalid username or password");
+    }
 }
 
 function logout() {
-  if (confirm("Logout?")) {
-    localStorage.removeItem('token');
-    location.reload();
-  }
+    if (confirm("Logout?")) {
+        localStorage.clear();
+        location.reload();
+    }
 }
 
 // Show modal if not logged in
 if (!token) {
-  authModal.classList.remove('hidden');
+    authModal.classList.remove('hidden');
 } else {
-  socket.emit('auth', token);
-  usernameDisplay.textContent = `👤 ${username || 'User'}`;
+    socket.emit('auth', { token, room: currentRoom });
+    usernameDisplay.textContent = `👤 ${username || 'User'}`;
 }
 
 // Chat Functions
-function joinNewRoom() {
-  const room = document.getElementById('roomInput').value.trim();
-  if (room) socket.emit('joinRoom', room);
-}
-
 function sendMessage() {
-  const text = document.getElementById('messageInput').value.trim();
-  if (text) {
-    socket.emit('chatMessage', text);
-    document.getElementById('messageInput').value = '';
-  }
-}
-
-function uploadAvatar(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const fd = new FormData();
-  fd.append('file', file);
-  fetch('/upload', { method: 'POST', body: fd })
-    .then(r => r.json())
-    .then(data => socket.emit('updateAvatar', data.fileUrl));
-}
-
-function uploadFile(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const fd = new FormData();
-  fd.append('file', file);
-  fetch('/upload', { method: 'POST', body: fd })
-    .then(r => r.json())
-    .then(data => socket.emit('fileMessage', { fileUrl: data.fileUrl, fileType: data.fileType }));
+    const text = document.getElementById('messageInput').value.trim();
+    if (text) {
+        socket.emit('chatMessage', text);
+        document.getElementById('messageInput').value = '';
+    }
 }
 
 function addMessage(msg) {
-  const time = new Date(msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const avatarUrl = msg.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(msg.user)}&background=random`;
+    // --- START SYSTEM MESSAGE LOGIC ---
+    if (msg.type === 'system' || msg.user === 'System') {
+        const div = document.createElement('div');
+        div.className = "flex justify-center my-3";
+        div.innerHTML = `<span class="bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-4 py-1 rounded-full text-xs italic border border-gray-200 dark:border-gray-700">
+            ${msg.text}
+        </span>`;
+        messagesDiv.appendChild(div);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        return; // Stop here
+    }
+    // --- END SYSTEM MESSAGE LOGIC ---
 
-  const div = document.createElement('div');
-  div.className = `flex gap-3 ${msg.user === username ? 'justify-end' : ''}`;
-  div.innerHTML = `
-    <div class="${msg.user === username ? 'items-end' : 'items-start'}">
-      <div class="flex items-center gap-2 mb-1 text-xs text-gray-500 dark:text-gray-400">
-        <img src="${avatarUrl}" class="w-7 h-7 rounded-full">
-        <span>${msg.user}</span>
-        <span>${time}</span>
-      </div>
-      ${msg.type === 'text' ? 
-        `<div class="bg-white dark:bg-gray-800 px-5 py-3 rounded-3xl">${msg.text}</div>` : 
-        msg.fileType && msg.fileType.startsWith('image') ? 
-        `<img src="${msg.fileUrl}" class="max-w-xs rounded-3xl">` :
-        `<video src="${msg.fileUrl}" controls class="max-w-xs rounded-3xl"></video>`}
-    </div>
-  `;
-  messagesDiv.appendChild(div);
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    const time = new Date(msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const avatarUrl = msg.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(msg.user)}&background=random`;
+
+    const isMe = msg.user === username;
+    const div = document.createElement('div');
+    div.className = `flex gap-3 mb-4 ${isMe ? 'flex-row-reverse' : ''}`;
+    
+    div.innerHTML = `
+        <img src="${avatarUrl}" class="w-8 h-8 rounded-full self-end mb-1 shadow-sm">
+        <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[70%]">
+            <div class="flex items-center gap-2 mb-1 text-[10px] text-gray-500 uppercase tracking-wider">
+                <span>${msg.user}</span>
+                <span>•</span>
+                <span>${time}</span>
+            </div>
+            <div class="${isMe ? 'bg-blue-600 text-white rounded-l-2xl rounded-tr-2xl' : 'bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-r-2xl rounded-tl-2xl shadow-sm'} px-4 py-2 text-sm">
+                ${msg.type === 'text' ? msg.text : 
+                  msg.fileType && msg.fileType.startsWith('image') ? `<img src="${msg.fileUrl}" class="rounded-lg max-w-full">` :
+                  `<video src="${msg.fileUrl}" controls class="rounded-lg max-w-full"></video>`}
+            </div>
+        </div>
+    `;
+    messagesDiv.appendChild(div);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
 function updateOnlineUsers(users) {
-  onlineUsersDiv.innerHTML = users.map(u => `
-    <div class="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800">
-      <div class="w-2 h-2 bg-green-500 rounded-full"></div>
-      ${u}
-    </div>
-  `).join('');
+    onlineUsersDiv.innerHTML = users.map(u => `
+        <div class="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+            <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">${u}</span>
+        </div>
+    `).join('');
 }
 
 // Socket Events
 socket.on('history', (msgs) => { messagesDiv.innerHTML = ''; msgs.forEach(addMessage); });
 socket.on('message', addMessage);
 socket.on('onlineUsers', updateOnlineUsers);
-socket.on('system', (text) => {
-  const div = document.createElement('div');
-  div.className = "text-center text-gray-500 dark:text-gray-400 my-4";
-  div.textContent = text;
-  messagesDiv.appendChild(div);
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+socket.on('displayTyping', (data) => {
+    typingIndicator.textContent = data.isTyping ? `${data.user} is typing...` : '';
 });
-socket.on('typing', (data) => {
-  typingIndicator.textContent = data.isTyping ? `${data.user} is typing...` : '';
-});
-socket.on('joined', (data) => {
-  currentRoom = data.room;
-  roomNameEl.textContent = currentRoom;
-});
+
 socket.on('authError', () => {
-  localStorage.removeItem('token');
-  authModal.classList.remove('hidden');
+    localStorage.clear();
+    authModal.classList.remove('hidden');
 });
 
 // Typing indicator
 let typingTimeout;
 document.getElementById('messageInput').addEventListener('input', () => {
-  socket.emit('typing', true);
-  clearTimeout(typingTimeout);
-  typingTimeout = setTimeout(() => socket.emit('typing', false), 800);
+    socket.emit('typing', { isTyping: true });
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => socket.emit('typing', { isTyping: false }), 1500);
 });
 
 document.getElementById('messageInput').addEventListener('keypress', (e) => {
-  if (e.key === 'Enter') sendMessage();
+    if (e.key === 'Enter') sendMessage();
 });
