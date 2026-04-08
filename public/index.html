@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatHub Pro</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' };
+    if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+    }
+  </script>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    body { font-family: 'Inter', sans-serif; transition: background 0.3s; }
+    .message-animate { animation: slideUp 0.2s ease-out; }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+    .dark ::-webkit-scrollbar-thumb { background: #334155; }
+  </style>
+</head>
+<body class="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 h-screen overflow-hidden">
+
+<div id="roomModal" class="hidden fixed inset-0 bg-gray-50 dark:bg-gray-950 z-[60] flex items-center justify-center p-4">
+    <div class="max-w-md w-full space-y-8 text-center">
+        <div class="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white text-3xl font-bold mx-auto mb-4 shadow-xl shadow-blue-500/20">C</div>
+        <h2 class="text-3xl font-extrabold">Welcome, <span id="welcomeUser" class="text-blue-600"></span></h2>
+        <div class="bg-white dark:bg-gray-900 p-8 rounded-3xl shadow-xl space-y-4 border dark:border-gray-800">
+            <input id="roomInput" type="text" placeholder="Enter Room Name" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl outline-none border-2 border-transparent focus:border-blue-500 transition-all">
+            <button onclick="joinRoom()" class="w-full bg-blue-600 py-4 rounded-xl text-white font-bold hover:bg-blue-700 transition-colors">Enter Room</button>
+            <button onclick="logout()" class="w-full text-gray-400 text-sm hover:text-red-500 transition-colors">Sign out</button>
+        </div>
+    </div>
+</div>
+
+<div class="flex h-full">
+  <aside id="sidebar" class="hidden md:flex w-72 flex-col bg-white dark:bg-gray-900 border-r dark:border-gray-800 shadow-xl z-20">
+    <div class="p-6 border-b dark:border-gray-800 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+          <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white text-xl font-bold shadow-lg shadow-blue-500/20">C</div>
+          <h1 class="font-bold text-lg">ChatHub</h1>
+      </div>
+      <button onclick="location.reload()" class="p-2 text-gray-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+      </button>
+    </div>
+    <div class="p-4">
+      <input id="searchInput" type="text" oninput="searchMessages()" placeholder="Search in room..." class="w-full bg-gray-100 dark:bg-gray-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:ring-2 ring-blue-500/20 transition-all">
+    </div>
+    <div class="p-4 flex-1 overflow-y-auto">
+      <h2 class="text-[10px] uppercase font-bold text-gray-400 mb-4 px-2 flex items-center gap-2">
+          <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span> Online Now
+      </h2>
+      <div id="onlineUsers" class="space-y-1"></div>
+    </div>
+  </aside>
+
+  <main class="flex-1 flex flex-col relative bg-white dark:bg-gray-900">
+    <header id="mainHeader" class="hidden h-16 border-b dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md px-6 flex items-center justify-between z-10">
+      <div id="roomDisplay" class="text-sm font-bold text-blue-600 uppercase tracking-widest bg-blue-50 dark:bg-blue-900/20 px-3 py-1 rounded-lg">#general</div>
+      <div class="flex items-center gap-3">
+        <button onclick="toggleTheme()" class="p-2 rounded-xl bg-gray-100 dark:bg-gray-800 hover:ring-2 ring-blue-500/50 transition-all group">
+          <svg id="sunIcon" class="hidden dark:block w-5 h-5 text-yellow-400 group-hover:rotate-45" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z" /></svg>
+          <svg id="moonIcon" class="block dark:hidden w-5 h-5 text-gray-600 group-hover:-rotate-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
+        </button>
+        <div id="usernameDisplay" class="text-sm font-semibold opacity-70 ml-2 hidden sm:block"></div>
+        <button onclick="logout()" class="p-2 text-gray-400 hover:text-red-500 transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <div id="messages" class="flex-1 overflow-y-auto p-6 space-y-4"></div>
+    <div id="typingIndicator" class="px-6 py-2 text-[10px] font-bold text-blue-500 italic opacity-0 transition-opacity"><span id="typingText"></span> is typing...</div>
+
+    <footer class="p-6 bg-white dark:bg-gray-900 border-t dark:border-gray-800">
+      <div class="flex flex-col gap-2 max-w-5xl mx-auto">
+        <div class="flex items-center gap-3">
+            <div class="flex gap-1">
+                <label class="cursor-pointer p-3 bg-gray-100 dark:bg-gray-800 rounded-2xl hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                    <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <input type="file" class="hidden" onchange="uploadFile(this.files[0])">
+                </label>
+                <button onclick="addEmoji('😊')" class="p-3 bg-gray-100 dark:bg-gray-800 rounded-2xl hover:bg-yellow-100 dark:hover:bg-yellow-900/20 transition-colors text-lg leading-none">😊</button>
+            </div>
+            <input id="messageInput" type="text" placeholder="Type a message..." class="flex-1 bg-gray-100 dark:bg-gray-800 rounded-2xl px-5 py-3.5 text-sm outline-none focus:ring-2 ring-blue-500/20 transition-all">
+            <button onclick="sendMessage()" class="w-[52px] h-[52px] bg-blue-600 hover:bg-blue-700 text-white rounded-2xl shadow-lg shadow-blue-500/30 active:scale-90 transition-all group flex items-center justify-center shrink-0">
+              <svg class="w-6 h-6 transform rotate-90 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+            </button>
+        </div>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<div id="authModal" class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div class="bg-white dark:bg-gray-900 p-8 rounded-3xl w-full max-w-sm shadow-2xl border dark:border-gray-800">
+      <h2 class="text-2xl font-bold mb-6 text-center">ChatHub Pro</h2>
+      <div id="loginForm" class="space-y-4">
+        <input id="loginUsername" type="text" placeholder="Username" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
+        <input id="loginPassword" type="password" placeholder="Password" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
+        <button onclick="login()" class="w-full bg-blue-600 py-4 rounded-xl text-white font-bold shadow-lg shadow-blue-500/30">Sign In</button>
+        <p class="text-center text-xs opacity-50 cursor-pointer hover:opacity-100" onclick="document.getElementById('loginForm').classList.add('hidden'); document.getElementById('regForm').classList.remove('hidden')">No account? Register</p>
+      </div>
+      <div id="regForm" class="space-y-4 hidden">
+        <input id="regUsername" type="text" placeholder="Username" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
+        <input id="regPassword" type="password" placeholder="Password" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
+        <button onclick="register()" class="w-full bg-green-600 py-4 rounded-xl text-white font-bold">Create Account</button>
+        <p class="text-center text-xs opacity-50 cursor-pointer underline" onclick="document.getElementById('regForm').classList.add('hidden'); document.getElementById('loginForm').classList.remove('hidden')">Back to login</p>
+      </div>
+    </div>
+</div>
+
+<script>
+  const socket = io();
+  let token = localStorage.getItem('token'), username = localStorage.getItem('username') || '', activeRoom = '';
+  let typing = false, timeout = undefined;
+
+  // FIXED: AVATAR COLOR GENERATION
+  function createAvatar(name) {
+    const colors = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-600', 'bg-purple-500', 'bg-pink-500', 'bg-indigo-500', 'bg-teal-500'];
+    let hash = 0; 
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    const color = colors[Math.abs(hash) % colors.length];
+    return `<div class="w-9 h-9 ${color} rounded-full flex items-center justify-center text-[11px] font-bold text-white shadow-sm ring-2 ring-white dark:ring-gray-900 transition-all hover:scale-110 cursor-default" title="${name}">${name.substring(0,2).toUpperCase()}</div>`;
+  }
+
+  function stoppedTyping() {
+    typing = false;
+    socket.emit('typing', { isTyping: false });
+  }
+
+  document.getElementById('messageInput').addEventListener('input', () => {
+    if (!typing) { typing = true; socket.emit('typing', { isTyping: true }); }
+    clearTimeout(timeout);
+    timeout = setTimeout(stoppedTyping, 2000);
+  });
+
+  document.getElementById('messageInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { sendMessage(); stoppedTyping(); }
+  });
+
+  function joinRoom() {
+    const room = document.getElementById('roomInput').value.trim();
+    if (!room) return alert("Enter a room name");
+    activeRoom = room.toLowerCase();
+    document.getElementById('roomModal').classList.add('hidden');
+    document.getElementById('sidebar').classList.remove('hidden');
+    document.getElementById('mainHeader').classList.remove('hidden');
+    document.getElementById('roomDisplay').innerText = `#${activeRoom}`;
+    socket.emit('auth', { token, room: activeRoom });
+  }
+
+  async function uploadFile(file) {
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (data.fileUrl) socket.emit('fileMessage', data);
+  }
+
+  function addEmoji(emoji) {
+    const input = document.getElementById('messageInput');
+    input.value += emoji;
+    input.focus();
+  }
+
+  function addMessage(msg) {
+    const isMe = msg.user === username, isSys = msg.type === 'system';
+    const time = new Date(msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const div = document.createElement('div');
+    div.id = `msg-${msg._id}`;
+    div.className = isSys ? "flex justify-center my-3 message-animate" : `msg-container flex gap-3 ${isMe ? 'flex-row-reverse' : 'flex-row'} items-end message-animate mb-5 group`;
+    
+    if (isSys) {
+      div.innerHTML = `<span class="bg-gray-200 dark:bg-gray-800 text-gray-500 text-[10px] font-bold px-4 py-1.5 rounded-full uppercase tracking-widest">${msg.text}</span>`;
+    } else {
+      const others = (msg.seenBy || []).filter(u => u !== msg.user);
+      const seenText = isMe && others.length > 0 ? `Seen by ${others.join(', ')}` : '';
+      let content = "";
+      if (msg.type === 'text') {
+          content = `<div class="bubble-text ${isMe ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm'} px-4 py-2.5 rounded-2xl text-sm transition-all">${msg.text}</div>`;
+      } else {
+          if (msg.fileType && msg.fileType.startsWith('image/')) {
+              content = `<img src="${msg.fileUrl}" class="bubble-text max-w-xs rounded-2xl border-4 border-white dark:border-gray-800 shadow-lg cursor-pointer hover:scale-[1.02] transition-transform" onclick="window.open('${msg.fileUrl}')">`;
+          } else {
+              content = `<div class="bubble-text bg-gray-100 dark:bg-gray-800 p-4 rounded-2xl flex items-center gap-3 border dark:border-gray-700">
+                            <svg class="w-8 h-8 text-blue-500" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"></path></svg>
+                            <div class="flex flex-col overflow-hidden">
+                                <span class="text-xs font-bold truncate w-32">${msg.fileName || 'File'}</span>
+                                <a href="${msg.fileUrl}" download class="text-[10px] text-blue-500 font-bold hover:underline">DOWNLOAD</a>
+                            </div>
+                         </div>`;
+          }
+      }
+      div.innerHTML = `
+        ${createAvatar(msg.user)}
+        <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[75%]">
+          <div class="flex items-center gap-2 mb-1 px-1">
+             <span class="text-[10px] font-bold uppercase tracking-tight opacity-40">${isMe ? 'You' : msg.user}</span>
+             <span class="text-[9px] opacity-20 font-medium">${time}</span>
+          </div>
+          ${content}
+          <div class="seen-status text-[8px] font-bold text-blue-500 mt-1.5 h-2 opacity-0 group-hover:opacity-100 transition-opacity uppercase tracking-tighter">${seenText}</div>
+        </div>`;
+    }
+    document.getElementById('messages').appendChild(div);
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    if (!isMe && !isSys && (!msg.seenBy || !msg.seenBy.includes(username))) socket.emit('messageRead', { msgId: msg._id });
+  }
+
+  function searchMessages() {
+    const q = document.getElementById('searchInput').value.toLowerCase();
+    document.querySelectorAll('.msg-container').forEach(el => {
+      const bubble = el.querySelector('.bubble-text');
+      if (bubble) el.style.display = (bubble.innerText || "").toLowerCase().includes(q) ? 'flex' : 'none';
+    });
+  }
+
+  socket.on('message', addMessage);
+  socket.on('history', h => { document.getElementById('messages').innerHTML = ''; h.forEach(addMessage); });
+  socket.on('onlineUsers', users => {
+    document.getElementById('onlineUsers').innerHTML = users.map(u => `
+        <div class="flex items-center gap-3 p-2.5 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-all group">
+            ${createAvatar(u)}
+            <span class="truncate opacity-70 group-hover:opacity-100 transition-opacity">${u}</span>
+            <div class="w-2 h-2 bg-green-500 rounded-full ml-auto shadow-[0_0_8px_rgba(34,197,94,0.5)]"></div>
+        </div>`).join('');
+  });
+  socket.on('displayTyping', d => { 
+      document.getElementById('typingText').innerText = d.user; 
+      document.getElementById('typingIndicator').style.opacity = d.isTyping ? '1' : '0'; 
+  });
+  socket.on('readUpdate', data => {
+    const msgEl = document.getElementById(`msg-${data.msgId}`);
+    if (msgEl) {
+      const statusEl = msgEl.querySelector('.seen-status');
+      const others = data.seenBy.filter(u => u !== username);
+      if (statusEl && others.length > 0) statusEl.innerText = `Seen by ${others.join(', ')}`;
+    }
+  });
+
+  function sendMessage() {
+    const input = document.getElementById('messageInput');
+    if (input.value.trim() && activeRoom) { socket.emit('chatMessage', input.value); input.value = ''; }
+  }
+
+  async function login() {
+    const u = document.getElementById('loginUsername').value, p = document.getElementById('loginPassword').value;
+    const res = await fetch('/login', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username: u, password: p}) });
+    if (res.ok) { const d = await res.json(); localStorage.setItem('token', d.token); localStorage.setItem('username', d.username); location.reload(); }
+    else alert("Login failed");
+  }
+
+  async function register() {
+    const u = document.getElementById('regUsername').value, p = document.getElementById('regPassword').value;
+    const res = await fetch('/register', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username: u, password: p}) });
+    if(res.ok) { alert("Registered!"); location.reload(); }
+  }
+
+  function logout() { localStorage.clear(); location.reload(); }
+  function toggleTheme() {
+    const isDark = document.documentElement.classList.toggle('dark');
+    localStorage.theme = isDark ? 'dark' : 'light';
+  }
+
+  if (token) {
+    document.getElementById('authModal').classList.add('hidden');
+    document.getElementById('roomModal').classList.remove('hidden');
+    document.getElementById('welcomeUser').innerText = username;
+    document.getElementById('usernameDisplay').innerText = username;
+  }
+</script>
+</body>
+</html>

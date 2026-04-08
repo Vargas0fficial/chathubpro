@@ -1,0 +1,4 @@
+body { font-family: system-ui, -apple-system, sans-serif; }
+#messages::-webkit-scrollbar { width: 6px; }
+#messages::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+.message { max-width: 75%; }
