@@ -20,6 +20,13 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
     .dark ::-webkit-scrollbar-thumb { background: #334155; }
+    
+    /* Notification Pulse for Mentions */
+    @keyframes pulse-yellow {
+      0%, 100% { background-color: rgba(250, 204, 21, 1); }
+      50% { background-color: rgba(250, 204, 21, 0.5); }
+    }
+    .mention-me { animation: pulse-yellow 2s infinite; }
   </style>
 </head>
 <body class="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 h-screen overflow-hidden">
@@ -100,14 +107,14 @@
     <div class="bg-white dark:bg-gray-900 p-8 rounded-3xl w-full max-w-sm shadow-2xl border dark:border-gray-800">
       <h2 class="text-2xl font-bold mb-6 text-center">ChatHub Pro</h2>
       <div id="loginForm" class="space-y-4">
-        <input id="loginUsername" type="text" placeholder="Username" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
-        <input id="loginPassword" type="password" placeholder="Password" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
+        <input id="loginUsername" type="text" placeholder="Username" autocomplete="username" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
+        <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
         <button onclick="login()" class="w-full bg-blue-600 py-4 rounded-xl text-white font-bold shadow-lg shadow-blue-500/30">Sign In</button>
         <p class="text-center text-xs opacity-50 cursor-pointer hover:opacity-100" onclick="document.getElementById('loginForm').classList.add('hidden'); document.getElementById('regForm').classList.remove('hidden')">No account? Register</p>
       </div>
       <div id="regForm" class="space-y-4 hidden">
-        <input id="regUsername" type="text" placeholder="Username" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
-        <input id="regPassword" type="password" placeholder="Password" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
+        <input id="regUsername" type="text" placeholder="Username" autocomplete="username" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
+        <input id="regPassword" type="password" placeholder="Password" autocomplete="new-password" class="w-full bg-gray-50 dark:bg-gray-800 p-4 rounded-xl text-sm outline-none">
         <button onclick="register()" class="w-full bg-green-600 py-4 rounded-xl text-white font-bold">Create Account</button>
         <p class="text-center text-xs opacity-50 cursor-pointer underline" onclick="document.getElementById('regForm').classList.add('hidden'); document.getElementById('loginForm').classList.remove('hidden')">Back to login</p>
       </div>
@@ -145,7 +152,6 @@
     typingTimeout = setTimeout(stoppedTyping, 2000);
   });
 
-  // Listen for other users typing
   socket.on('userTyping', d => { 
       const indicator = document.getElementById('typingIndicator');
       document.getElementById('typingText').innerText = d.user; 
@@ -199,7 +205,25 @@
       let content = "";
       
       if (msg.type === 'text') {
-          content = `<div class="bubble-text ${isMe ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm'} px-4 py-2.5 rounded-2xl text-sm transition-all">${msg.text}</div>`;
+          // Check if YOU are mentioned
+          const isMentioned = msg.text.includes(`@${username}`);
+          
+          // Regex to highlight all @mentions
+          const mentionRegex = /@(\w+)/g;
+          const processedText = msg.text.replace(mentionRegex, (match, user) => {
+              const isMeMentioned = user === username;
+              return `<span class="px-1 rounded font-bold ${isMeMentioned ? 'bg-yellow-400 text-black mention-me' : 'text-blue-400'}">@${user}</span>`;
+          });
+
+          // Play sound if mentioned by someone else
+          if (isMentioned && !isMe) {
+              const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
+              audio.volume = 0.4;
+              audio.play().catch(() => {}); 
+          }
+
+          const mentionBorder = isMentioned && !isMe ? 'ring-2 ring-yellow-400 shadow-lg shadow-yellow-400/20' : '';
+          content = `<div class="bubble-text ${mentionBorder} ${isMe ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm'} px-4 py-2.5 rounded-2xl text-sm transition-all">${processedText}</div>`;
       } else {
           if (msg.fileType && msg.fileType.startsWith('image/')) {
               content = `<img src="${msg.fileUrl}" class="bubble-text max-w-xs rounded-2xl border-4 border-white dark:border-gray-800 shadow-lg cursor-pointer hover:scale-[1.02] transition-transform" onclick="window.open('${msg.fileUrl}')">`;
@@ -227,7 +251,6 @@
     document.getElementById('messages').appendChild(div);
     document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
     
-    // Send Read Receipt
     if (!isMe && !isSys && (!msg.seenBy || !msg.seenBy.includes(username))) {
       socket.emit('messageRead', { msgId: msg._id });
     }
@@ -247,7 +270,8 @@
   
   socket.on('onlineUsers', users => {
     document.getElementById('onlineUsers').innerHTML = users.map(u => `
-        <div class="flex items-center gap-3 p-2.5 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-all group">
+        <div onclick="const inp = document.getElementById('messageInput'); inp.value += '@${u} '; inp.focus();"
+             class="flex items-center gap-3 p-2.5 rounded-xl text-sm font-medium hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all group cursor-pointer">
             ${createAvatar(u)}
             <span class="truncate opacity-70 group-hover:opacity-100 transition-opacity">${u}</span>
             <div class="w-2 h-2 bg-green-500 rounded-full ml-auto shadow-[0_0_8px_rgba(34,197,94,0.5)]"></div>
@@ -303,3 +327,5 @@
     document.getElementById('usernameDisplay').innerText = username;
   }
 </script>
+</body>
+</html>
