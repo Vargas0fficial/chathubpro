@@ -20,6 +20,17 @@
       transition: background 0.5s cubic-bezier(0.4, 0, 0.2, 1); 
     }
 
+    /* --- LOADING ANIMATIONS --- */
+    #appLoader {
+      transition: opacity 0.6s ease, visibility 0.6s;
+    }
+
+    .search-loading-blur {
+      filter: blur(4px);
+      opacity: 0.6;
+      transition: all 0.3s ease;
+    }
+
     /* --- PRO BUTTON ENHANCEMENTS --- */
     @keyframes shimmer {
       100% { left: 125%; }
@@ -95,6 +106,16 @@
 </head>
 <body class="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 h-screen overflow-hidden">
 
+<div id="appLoader" class="fixed inset-0 z-[100] bg-gray-50 dark:bg-gray-950 flex flex-col items-center justify-center">
+    <div class="relative">
+        <div class="w-24 h-24 border-4 border-blue-600/20 border-t-blue-600 rounded-full animate-spin"></div>
+        <div class="absolute inset-0 flex items-center justify-center">
+            <div class="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-2xl shadow-lg">C</div>
+        </div>
+    </div>
+    <p class="mt-6 text-[10px] font-bold tracking-[0.3em] text-gray-400 uppercase animate-pulse">Initializing ChatHub Pro</p>
+</div>
+
 <div id="roomModal" class="hidden fixed inset-0 bg-gray-50/80 dark:bg-gray-950/80 modal-blur z-[60] flex items-center justify-center p-4">
     <div class="max-w-md w-full space-y-8 text-center animate-springUp">
         <div class="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white text-3xl font-bold mx-auto mb-4 shadow-xl shadow-blue-500/20">C</div>
@@ -120,9 +141,15 @@
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
       </button>
     </div>
-    <div class="p-4">
-      <input id="searchInput" type="text" oninput="searchMessages()" placeholder="Search messages..." class="w-full bg-gray-100 dark:bg-gray-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:ring-2 ring-blue-500/20 transition-all">
+    
+    <div class="p-4 relative">
+      <input id="searchInput" type="text" oninput="searchMessages()" placeholder="Search messages..." class="w-full bg-gray-100 dark:bg-gray-800 rounded-xl px-4 py-2.5 pl-10 text-xs outline-none focus:ring-2 ring-blue-500/20 transition-all">
+      <div class="absolute left-7 top-1/2 -translate-y-1/2 text-gray-400">
+        <svg id="searchIcon" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+        <svg id="searchLoader" class="hidden animate-spin w-3.5 h-3.5 text-blue-500" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+      </div>
     </div>
+
     <div class="p-4 flex-1 overflow-y-auto">
       <h2 class="text-[10px] uppercase font-bold text-gray-400 mb-4 px-2 flex items-center gap-2">
           <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span> Online Now
@@ -202,7 +229,16 @@
   let token = localStorage.getItem('token'), 
       username = localStorage.getItem('username') || '', 
       activeRoom = '';
-  let isTypingLocal = false, typingTimeout;
+  let isTypingLocal = false, typingTimeout, searchTimeout;
+
+  // HANDLE FULL PAGE LOADING
+  window.addEventListener('load', () => {
+    const loader = document.getElementById('appLoader');
+    setTimeout(() => {
+      loader.classList.add('opacity-0');
+      setTimeout(() => { loader.style.visibility = 'hidden'; }, 600);
+    }, 1000);
+  });
 
   function createAvatar(name) {
     const colors = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-600', 'bg-purple-500', 'bg-pink-500', 'bg-indigo-500', 'bg-teal-500', 'bg-orange-500', 'bg-cyan-500'];
@@ -240,7 +276,6 @@
     const btn = event.currentTarget;
     btn.innerHTML = "Joining...";
 
-    // Prime audio for mobile
     const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
     audio.volume = 0; audio.play().catch(()=>{});
 
@@ -324,12 +359,34 @@
     }
   }
 
+  // SEARCH WITH LIVE ANIMATION
   function searchMessages() {
     const q = document.getElementById('searchInput').value.toLowerCase();
-    document.querySelectorAll('.msg-container').forEach(el => {
-      const bubble = el.querySelector('.bubble-text') || el.querySelector('img');
-      if (bubble) el.style.display = (bubble.innerText || bubble.alt || "").toLowerCase().includes(q) ? 'flex' : 'none';
-    });
+    const icon = document.getElementById('searchIcon');
+    const loader = document.getElementById('searchLoader');
+    const msgBox = document.getElementById('messages');
+
+    // Show Loader State
+    icon.classList.add('hidden');
+    loader.classList.remove('hidden');
+    msgBox.classList.add('search-loading-blur');
+
+    clearTimeout(searchTimeout);
+
+    searchTimeout = setTimeout(() => {
+      document.querySelectorAll('.msg-container').forEach(el => {
+        const bubble = el.querySelector('.bubble-text') || el.querySelector('img');
+        if (bubble) {
+          const isVisible = (bubble.innerText || bubble.alt || "").toLowerCase().includes(q);
+          el.style.display = isVisible ? 'flex' : 'none';
+        }
+      });
+
+      // Reset UI state
+      icon.classList.remove('hidden');
+      loader.classList.add('hidden');
+      msgBox.classList.remove('search-loading-blur');
+    }, 400); // 400ms delay for smooth transition
   }
 
   socket.on('message', addMessage);
