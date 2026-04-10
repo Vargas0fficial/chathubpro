@@ -12,7 +12,6 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Ensure uploads folder exists
 if (!fs.existsSync('./uploads')) fs.mkdirSync('./uploads');
 
 app.use(express.json());
@@ -31,6 +30,7 @@ const upload = multer({ storage: multer.diskStorage({
   filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 })});
 
+// AUTH ROUTES
 app.post('/register', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -53,47 +53,54 @@ app.post('/login', async (req, res) => {
 });
 
 app.post('/upload', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   res.json({ fileUrl: `/uploads/${req.file.filename}`, fileName: req.file.originalname, fileType: req.file.mimetype });
 });
 
 const online = new Map();
 
 io.on('connection', (socket) => {
-  let user = null;
-  let currentRoom = null;
+  socket.user = null;
+  socket.currentRoom = null;
 
   console.log('🔌 New socket connection established');
 
   socket.on('auth', async (data) => {
-    console.log("📥 Auth received with data:", data);
     try {
       const tokenToVerify = typeof data === 'string' ? data : data.token;
-      const roomRequested = typeof data === 'string' ? 'public' : (data.room || 'public');
+      const roomRequested = (typeof data === 'object' && data.room) ? data.room : 'public';
 
       const decoded = jwt.verify(tokenToVerify, process.env.JWT_SECRET);
-      user = decoded.username;
-      currentRoom = roomRequested.toLowerCase();
+      socket.user = decoded.username;
+      socket.currentRoom = roomRequested.toLowerCase().trim(); 
       
-      socket.join(currentRoom);
+      socket.join(socket.currentRoom);
       
-      if (!online.has(currentRoom)) online.set(currentRoom, new Set());
-      online.get(currentRoom).add(user);
+      if (!online.has(socket.currentRoom)) online.set(socket.currentRoom, new Set());
+      online.get(socket.currentRoom).add(socket.user);
       
-      console.log(`👤 User Authenticated: ${user} in [${currentRoom}]`);
+      console.log(`👤 User Authenticated: ${socket.user} in [${socket.currentRoom}]`);
       
-      const joinMsg = new Message({ 
-        room: currentRoom, 
+      // --- FIX 1: INCREASE LIMIT & SORT BY NEWEST FIRST ---
+      const history = await Message.find({ room: socket.currentRoom })
+        .sort({ createdAt: -1 }) // Get the 500 newest messages
+        .limit(500);
+      
+      // We reverse them so the oldest appears at the top for the user
+      socket.emit('history', history.reverse());
+
+      // --- FIX 2: SYSTEM MESSAGES ARE NOW LIVE-ONLY (NOT SAVED) ---
+      const joinMsg = { 
+        room: socket.currentRoom, 
         user: 'System', 
-        text: `${user} joined the chat`, 
+        text: `${socket.user} joined the chat`, 
         type: 'system' 
-      });
-      await joinMsg.save();
+      };
       
-      io.to(currentRoom).emit('message', joinMsg);
-      io.to(currentRoom).emit('onlineUsers', Array.from(online.get(currentRoom)));
+      // Removed await joinMsg.save() to stop database clutter
+      io.to(socket.currentRoom).emit('message', joinMsg);
+      io.to(socket.currentRoom).emit('onlineUsers', Array.from(online.get(socket.currentRoom)));
       
-      const history = await Message.find({ room: currentRoom }).sort({ createdAt: 1 }).limit(50);
-      socket.emit('history', history);
     } catch (e) { 
       console.error("❌ Auth Error:", e.message);
       socket.disconnect(); 
@@ -101,57 +108,54 @@ io.on('connection', (socket) => {
   });
 
   socket.on('chatMessage', async (text) => {
-    if (!user || !currentRoom) return;
-    const msg = new Message({ room: currentRoom, user, text, type: 'text', seenBy: [user] });
-    await msg.save();
-    io.to(currentRoom).emit('message', msg);
-  });
+    if (!socket.user || !socket.currentRoom) return;
 
-  socket.on('fileMessage', async (data) => {
-    if (!user || !currentRoom) return;
-    const msg = new Message({ room: currentRoom, user, ...data, type: 'file', seenBy: [user] });
-    await msg.save();
-    io.to(currentRoom).emit('message', msg);
-  });
-
-  socket.on('messageRead', async (data) => {
-    if (!user || !currentRoom) return;
-    const msg = await Message.findById(data.msgId);
-    if (msg && !msg.seenBy.includes(user)) {
-      msg.seenBy.push(user);
-      await msg.save();
-      io.to(currentRoom).emit('readUpdate', { msgId: data.msgId, seenBy: msg.seenBy });
+    try {
+      const msg = new Message({ 
+        room: socket.currentRoom, 
+        user: socket.user, 
+        text, 
+        type: 'text', 
+        seenBy: [socket.user] 
+      });
+      const savedMsg = await msg.save();
+      io.to(socket.currentRoom).emit('message', savedMsg);
+    } catch (err) {
+      console.error("❌ Failed to save message:", err.message);
     }
   });
 
-  socket.on('typing', (d) => {
-    const isTyping = typeof d === 'boolean' ? d : d.isTyping;
-    if (currentRoom) socket.to(currentRoom).emit('displayTyping', { user, isTyping });
+  socket.on('fileMessage', async (data) => {
+    if (!socket.user || !socket.currentRoom) return;
+    try {
+      const msg = new Message({ 
+        room: socket.currentRoom, 
+        user: socket.user, 
+        ...data, 
+        type: 'file', 
+        seenBy: [socket.user] 
+      });
+      await msg.save();
+      io.to(socket.currentRoom).emit('message', msg);
+    } catch (err) {
+      console.error("❌ File save error:", err);
+    }
   });
 
   socket.on('disconnect', async () => {
-    console.log(`🔌 Socket disconnecting... (User: ${user}, Room: ${currentRoom})`);
-    
-    if (user && currentRoom && online.has(currentRoom)) {
-      online.get(currentRoom).delete(user);
+    if (socket.user && socket.currentRoom && online.has(socket.currentRoom)) {
+      online.get(socket.currentRoom).delete(socket.user);
       
-      const leaveMsg = new Message({ 
-        room: currentRoom, 
+      const leaveMsg = { 
+        room: socket.currentRoom, 
         user: 'System', 
-        text: `${user} has left the chat`, 
+        text: `${socket.user} has left the chat`, 
         type: 'system' 
-      });
+      };
 
-      try {
-        await leaveMsg.save();
-        io.to(currentRoom).emit('message', leaveMsg);
-        io.to(currentRoom).emit('onlineUsers', Array.from(online.get(currentRoom)));
-        console.log(`✅ Log: ${user} successfully left the chat`);
-      } catch (err) {
-        console.error("❌ Error saving leave message:", err);
-      }
-    } else {
-      console.log("⚠️ Disconnect skipped: User or Room data missing on this socket.");
+      // Removed await leaveMsg.save() to keep history clean
+      io.to(socket.currentRoom).emit('message', leaveMsg);
+      io.to(socket.currentRoom).emit('onlineUsers', Array.from(online.get(socket.currentRoom)));
     }
   });
 });
