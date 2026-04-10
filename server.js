@@ -121,7 +121,10 @@ io.on('connection', (socket) => {
   // --- TYPING FEATURE ---
   socket.on('typing', (isTyping) => {
     if (!socket.user || !socket.currentRoom) return;
-    // Broadcast to others in the room
+    
+    // Log for debugging
+    console.log(`⌨️  ${socket.user} is typing: ${isTyping}`);
+
     socket.to(socket.currentRoom).emit('userTyping', {
       user: socket.user,
       typing: isTyping
@@ -134,7 +137,7 @@ io.on('connection', (socket) => {
     try {
       const msg = await Message.findByIdAndUpdate(
         data.msgId, 
-        { $addToSet: { seenBy: socket.user } }, // Add user to seen list if not already there
+        { $addToSet: { seenBy: socket.user } }, 
         { new: true }
       );
       if (msg) {
@@ -187,7 +190,17 @@ io.on('connection', (socket) => {
   socket.on('disconnect', async () => {
     if (socket.user && socket.currentRoom && online.has(socket.currentRoom)) {
       online.get(socket.currentRoom).delete(socket.user);
+      
+      // Update online list
       io.to(socket.currentRoom).emit('onlineUsers', Array.from(online.get(socket.currentRoom)));
+
+      // Broadcast "Left the chat" notification
+      io.to(socket.currentRoom).emit('message', { 
+        room: socket.currentRoom, 
+        user: 'System', 
+        text: `${socket.user} left the chat`, 
+        type: 'system' 
+      });
     }
   });
 });
