@@ -17,24 +17,22 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 // --- STARTUP DEBUG ---
-// This confirms your .env is working right when you start the server
 console.log("--- STARTUP DEBUG ---");
 console.log("Cloud Name:", process.env.CLOUDINARY_NAME ? "✅ " + process.env.CLOUDINARY_NAME : "❌ MISSING");
 console.log("API Key:", process.env.CLOUDINARY_KEY ? "✅ Loaded" : "❌ MISSING");
 
-// Configure Cloudinary
+// Configure Cloudinary (Added .trim() to prevent signature errors)
 cloudinary.config({ 
-  cloud_name: process.env.CLOUDINARY_NAME, 
-  api_key: process.env.CLOUDINARY_KEY, 
-  api_secret: process.env.CLOUDINARY_SECRET 
+  cloud_name: process.env.CLOUDINARY_NAME?.trim(), 
+  api_key: process.env.CLOUDINARY_KEY?.trim(), 
+  api_secret: process.env.CLOUDINARY_SECRET?.trim() 
 });
 
-// Configure Cloudinary Storage (Simplified for stability)
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
     folder: 'chat_uploads',
-    resource_type: 'auto', // Allows images, videos, or raw files automatically
+    resource_type: 'auto',
   },
 });
 
@@ -72,22 +70,16 @@ app.post('/login', async (req, res) => {
   } else res.status(401).send();
 });
 
-// --- UPDATED UPLOAD ROUTE WITH ERROR CATCHER ---
+// UPLOAD ROUTE
 app.post('/upload', upload.single('file'), (req, res) => {
-  if (!req.file) {
-    console.log("❌ Upload Error: No file was received by the server.");
-    return res.status(400).json({ error: "No file uploaded" });
-  }
-  
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   console.log("🚀 Cloudinary Upload Success! URL:", req.file.path);
-
   res.json({ 
     fileUrl: req.file.path, 
     fileName: req.file.originalname, 
     fileType: req.file.mimetype 
   });
 }, (error, req, res, next) => {
-  // This block catches Cloudinary-specific errors (like bad API secrets)
   console.error("❌ CLOUDINARY CRASH:", error.message);
   res.status(500).json({ error: error.message });
 });
@@ -138,6 +130,16 @@ io.on('connection', (socket) => {
     }
   });
 
+  // --- TYPING FEATURE EVENTS ---
+  socket.on('typing', (isTyping) => {
+    if (!socket.user || !socket.currentRoom) return;
+    // Broadcast to everyone else in the room
+    socket.to(socket.currentRoom).emit('userTyping', {
+      user: socket.user,
+      typing: isTyping
+    });
+  });
+
   socket.on('chatMessage', async (text) => {
     if (!socket.user || !socket.currentRoom) return;
     try {
@@ -158,9 +160,7 @@ io.on('connection', (socket) => {
   socket.on('fileMessage', async (data) => {
     if (!socket.user || !socket.currentRoom) return;
     try {
-      // JSON.stringify prevents the [object Object] print in terminal
       console.log("📂 File Data Received:", JSON.stringify(data));
-
       const msg = new Message({ 
         room: socket.currentRoom, 
         user: socket.user, 
