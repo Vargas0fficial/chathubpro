@@ -116,10 +116,12 @@
 
 <script>
   const socket = io();
-  let token = localStorage.getItem('token'), username = localStorage.getItem('username') || '', activeRoom = '';
-  let typing = false, timeout = undefined;
+  let token = localStorage.getItem('token'), 
+      username = localStorage.getItem('username') || '', 
+      activeRoom = '';
+  let isTypingLocal = false, typingTimeout;
 
-  // FIXED: AVATAR COLOR GENERATION
+  // AVATAR COLOR GENERATION
   function createAvatar(name) {
     const colors = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-600', 'bg-purple-500', 'bg-pink-500', 'bg-indigo-500', 'bg-teal-500'];
     let hash = 0; 
@@ -128,21 +130,33 @@
     return `<div class="w-9 h-9 ${color} rounded-full flex items-center justify-center text-[11px] font-bold text-white shadow-sm ring-2 ring-white dark:ring-gray-900 transition-all hover:scale-110 cursor-default" title="${name}">${name.substring(0,2).toUpperCase()}</div>`;
   }
 
+  // --- TYPING LOGIC ---
   function stoppedTyping() {
-    typing = false;
-    socket.emit('typing', { isTyping: false });
+    isTypingLocal = false;
+    socket.emit('typing', false);
   }
 
   document.getElementById('messageInput').addEventListener('input', () => {
-    if (!typing) { typing = true; socket.emit('typing', { isTyping: true }); }
-    clearTimeout(timeout);
-    timeout = setTimeout(stoppedTyping, 2000);
+    if (!isTypingLocal) { 
+      isTypingLocal = true; 
+      socket.emit('typing', true); 
+    }
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(stoppedTyping, 2000);
+  });
+
+  // Listen for other users typing
+  socket.on('userTyping', d => { 
+      const indicator = document.getElementById('typingIndicator');
+      document.getElementById('typingText').innerText = d.user; 
+      indicator.style.opacity = d.typing ? '1' : '0'; 
   });
 
   document.getElementById('messageInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { sendMessage(); stoppedTyping(); }
   });
 
+  // --- ROOM & AUTH ---
   function joinRoom() {
     const room = document.getElementById('roomInput').value.trim();
     if (!room) return alert("Enter a room name");
@@ -169,6 +183,7 @@
     input.focus();
   }
 
+  // --- MESSAGE RENDERING ---
   function addMessage(msg) {
     const isMe = msg.user === username, isSys = msg.type === 'system';
     const time = new Date(msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -182,6 +197,7 @@
       const others = (msg.seenBy || []).filter(u => u !== msg.user);
       const seenText = isMe && others.length > 0 ? `Seen by ${others.join(', ')}` : '';
       let content = "";
+      
       if (msg.type === 'text') {
           content = `<div class="bubble-text ${isMe ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm'} px-4 py-2.5 rounded-2xl text-sm transition-all">${msg.text}</div>`;
       } else {
@@ -210,7 +226,11 @@
     }
     document.getElementById('messages').appendChild(div);
     document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
-    if (!isMe && !isSys && (!msg.seenBy || !msg.seenBy.includes(username))) socket.emit('messageRead', { msgId: msg._id });
+    
+    // Send Read Receipt
+    if (!isMe && !isSys && (!msg.seenBy || !msg.seenBy.includes(username))) {
+      socket.emit('messageRead', { msgId: msg._id });
+    }
   }
 
   function searchMessages() {
@@ -221,8 +241,10 @@
     });
   }
 
+  // --- SOCKET LISTENERS ---
   socket.on('message', addMessage);
   socket.on('history', h => { document.getElementById('messages').innerHTML = ''; h.forEach(addMessage); });
+  
   socket.on('onlineUsers', users => {
     document.getElementById('onlineUsers').innerHTML = users.map(u => `
         <div class="flex items-center gap-3 p-2.5 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-all group">
@@ -231,10 +253,7 @@
             <div class="w-2 h-2 bg-green-500 rounded-full ml-auto shadow-[0_0_8px_rgba(34,197,94,0.5)]"></div>
         </div>`).join('');
   });
-  socket.on('displayTyping', d => { 
-      document.getElementById('typingText').innerText = d.user; 
-      document.getElementById('typingIndicator').style.opacity = d.isTyping ? '1' : '0'; 
-  });
+
   socket.on('readUpdate', data => {
     const msgEl = document.getElementById(`msg-${data.msgId}`);
     if (msgEl) {
@@ -244,16 +263,24 @@
     }
   });
 
+  // --- ACTIONS ---
   function sendMessage() {
     const input = document.getElementById('messageInput');
-    if (input.value.trim() && activeRoom) { socket.emit('chatMessage', input.value); input.value = ''; }
+    if (input.value.trim() && activeRoom) { 
+      socket.emit('chatMessage', input.value); 
+      input.value = ''; 
+    }
   }
 
   async function login() {
     const u = document.getElementById('loginUsername').value, p = document.getElementById('loginPassword').value;
     const res = await fetch('/login', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username: u, password: p}) });
-    if (res.ok) { const d = await res.json(); localStorage.setItem('token', d.token); localStorage.setItem('username', d.username); location.reload(); }
-    else alert("Login failed");
+    if (res.ok) { 
+      const d = await res.json(); 
+      localStorage.setItem('token', d.token); 
+      localStorage.setItem('username', d.username); 
+      location.reload(); 
+    } else alert("Login failed");
   }
 
   async function register() {
@@ -263,6 +290,7 @@
   }
 
   function logout() { localStorage.clear(); location.reload(); }
+  
   function toggleTheme() {
     const isDark = document.documentElement.classList.toggle('dark');
     localStorage.theme = isDark ? 'dark' : 'light';
@@ -275,5 +303,3 @@
     document.getElementById('usernameDisplay').innerText = username;
   }
 </script>
-</body>
-</html>

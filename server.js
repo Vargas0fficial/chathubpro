@@ -6,7 +6,6 @@ const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
-const fs = require('fs');
 
 // CLOUDINARY IMPORTS
 const cloudinary = require('cloudinary').v2;
@@ -16,12 +15,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// --- STARTUP DEBUG ---
-console.log("--- STARTUP DEBUG ---");
-console.log("Cloud Name:", process.env.CLOUDINARY_NAME ? "✅ " + process.env.CLOUDINARY_NAME : "❌ MISSING");
-console.log("API Key:", process.env.CLOUDINARY_KEY ? "✅ Loaded" : "❌ MISSING");
-
-// Configure Cloudinary (Added .trim() to prevent signature errors)
+// Configure Cloudinary with .trim() to ensure no accidental spaces
 cloudinary.config({ 
   cloud_name: process.env.CLOUDINARY_NAME?.trim(), 
   api_key: process.env.CLOUDINARY_KEY?.trim(), 
@@ -48,7 +42,7 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected Successfully'))
   .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// AUTH ROUTES
+// --- AUTH ROUTES ---
 app.post('/register', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -70,17 +64,16 @@ app.post('/login', async (req, res) => {
   } else res.status(401).send();
 });
 
-// UPLOAD ROUTE
+// --- IMAGE UPLOAD ROUTE ---
 app.post('/upload', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-  console.log("🚀 Cloudinary Upload Success! URL:", req.file.path);
   res.json({ 
     fileUrl: req.file.path, 
     fileName: req.file.originalname, 
     fileType: req.file.mimetype 
   });
 }, (error, req, res, next) => {
-  console.error("❌ CLOUDINARY CRASH:", error.message);
+  console.error("❌ CLOUDINARY ERROR:", error.message);
   res.status(500).json({ error: error.message });
 });
 
@@ -89,8 +82,6 @@ const online = new Map();
 io.on('connection', (socket) => {
   socket.user = null;
   socket.currentRoom = null;
-
-  console.log('🔌 New socket connection established');
 
   socket.on('auth', async (data) => {
     try {
@@ -105,8 +96,6 @@ io.on('connection', (socket) => {
       
       if (!online.has(socket.currentRoom)) online.set(socket.currentRoom, new Set());
       online.get(socket.currentRoom).add(socket.user);
-      
-      console.log(`👤 User Authenticated: ${socket.user} in [${socket.currentRoom}]`);
       
       const history = await Message.find({ room: socket.currentRoom })
         .sort({ createdAt: -1 })
@@ -125,21 +114,41 @@ io.on('connection', (socket) => {
       io.to(socket.currentRoom).emit('onlineUsers', Array.from(online.get(socket.currentRoom)));
       
     } catch (e) { 
-      console.error("❌ Auth Error:", e.message);
       socket.disconnect(); 
     }
   });
 
-  // --- TYPING FEATURE EVENTS ---
+  // --- TYPING FEATURE ---
   socket.on('typing', (isTyping) => {
     if (!socket.user || !socket.currentRoom) return;
-    // Broadcast to everyone else in the room
+    // Broadcast to others in the room
     socket.to(socket.currentRoom).emit('userTyping', {
       user: socket.user,
       typing: isTyping
     });
   });
 
+  // --- READ RECEIPTS (MESSAGE SEEN) ---
+  socket.on('messageRead', async (data) => {
+    if (!socket.user) return;
+    try {
+      const msg = await Message.findByIdAndUpdate(
+        data.msgId, 
+        { $addToSet: { seenBy: socket.user } }, // Add user to seen list if not already there
+        { new: true }
+      );
+      if (msg) {
+        io.to(socket.currentRoom).emit('readUpdate', { 
+          msgId: msg._id, 
+          seenBy: msg.seenBy 
+        });
+      }
+    } catch (err) {
+      console.error("❌ Read Receipt Error:", err);
+    }
+  });
+
+  // --- CHAT MESSAGES ---
   socket.on('chatMessage', async (text) => {
     if (!socket.user || !socket.currentRoom) return;
     try {
@@ -157,10 +166,10 @@ io.on('connection', (socket) => {
     }
   });
 
+  // --- FILE MESSAGES ---
   socket.on('fileMessage', async (data) => {
     if (!socket.user || !socket.currentRoom) return;
     try {
-      console.log("📂 File Data Received:", JSON.stringify(data));
       const msg = new Message({ 
         room: socket.currentRoom, 
         user: socket.user, 
@@ -171,22 +180,13 @@ io.on('connection', (socket) => {
       await msg.save();
       io.to(socket.currentRoom).emit('message', msg);
     } catch (err) {
-      console.error("❌ File Message DB Error:", err.message);
+      console.error("❌ File Save Error:", err.message);
     }
   });
 
   socket.on('disconnect', async () => {
     if (socket.user && socket.currentRoom && online.has(socket.currentRoom)) {
       online.get(socket.currentRoom).delete(socket.user);
-      
-      const leaveMsg = { 
-        room: socket.currentRoom, 
-        user: 'System', 
-        text: `${socket.user} has left the chat`, 
-        type: 'system' 
-      };
-
-      io.to(socket.currentRoom).emit('message', leaveMsg);
       io.to(socket.currentRoom).emit('onlineUsers', Array.from(online.get(socket.currentRoom)));
     }
   });
