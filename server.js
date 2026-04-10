@@ -8,15 +8,40 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const fs = require('fs');
 
+// CLOUDINARY IMPORTS
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-if (!fs.existsSync('./uploads')) fs.mkdirSync('./uploads');
+// --- STARTUP DEBUG ---
+// This confirms your .env is working right when you start the server
+console.log("--- STARTUP DEBUG ---");
+console.log("Cloud Name:", process.env.CLOUDINARY_NAME ? "✅ " + process.env.CLOUDINARY_NAME : "❌ MISSING");
+console.log("API Key:", process.env.CLOUDINARY_KEY ? "✅ Loaded" : "❌ MISSING");
+
+// Configure Cloudinary
+cloudinary.config({ 
+  cloud_name: process.env.CLOUDINARY_NAME, 
+  api_key: process.env.CLOUDINARY_KEY, 
+  api_secret: process.env.CLOUDINARY_SECRET 
+});
+
+// Configure Cloudinary Storage (Simplified for stability)
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'chat_uploads',
+    resource_type: 'auto', // Allows images, videos, or raw files automatically
+  },
+});
+
+const upload = multer({ storage: storage });
 
 app.use(express.json());
 app.use(express.static('public'));
-app.use('/uploads', express.static('uploads'));
 
 const User = require('./models/User');
 const Message = require('./models/Message');
@@ -24,11 +49,6 @@ const Message = require('./models/Message');
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected Successfully'))
   .catch(err => console.error('❌ MongoDB Connection Error:', err));
-
-const upload = multer({ storage: multer.diskStorage({
-  destination: 'uploads/',
-  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
-})});
 
 // AUTH ROUTES
 app.post('/register', async (req, res) => {
@@ -52,9 +72,24 @@ app.post('/login', async (req, res) => {
   } else res.status(401).send();
 });
 
+// --- UPDATED UPLOAD ROUTE WITH ERROR CATCHER ---
 app.post('/upload', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-  res.json({ fileUrl: `/uploads/${req.file.filename}`, fileName: req.file.originalname, fileType: req.file.mimetype });
+  if (!req.file) {
+    console.log("❌ Upload Error: No file was received by the server.");
+    return res.status(400).json({ error: "No file uploaded" });
+  }
+  
+  console.log("🚀 Cloudinary Upload Success! URL:", req.file.path);
+
+  res.json({ 
+    fileUrl: req.file.path, 
+    fileName: req.file.originalname, 
+    fileType: req.file.mimetype 
+  });
+}, (error, req, res, next) => {
+  // This block catches Cloudinary-specific errors (like bad API secrets)
+  console.error("❌ CLOUDINARY CRASH:", error.message);
+  res.status(500).json({ error: error.message });
 });
 
 const online = new Map();
@@ -81,15 +116,12 @@ io.on('connection', (socket) => {
       
       console.log(`👤 User Authenticated: ${socket.user} in [${socket.currentRoom}]`);
       
-      // --- FIX 1: INCREASE LIMIT & SORT BY NEWEST FIRST ---
       const history = await Message.find({ room: socket.currentRoom })
-        .sort({ createdAt: -1 }) // Get the 500 newest messages
+        .sort({ createdAt: -1 })
         .limit(500);
       
-      // We reverse them so the oldest appears at the top for the user
       socket.emit('history', history.reverse());
 
-      // --- FIX 2: SYSTEM MESSAGES ARE NOW LIVE-ONLY (NOT SAVED) ---
       const joinMsg = { 
         room: socket.currentRoom, 
         user: 'System', 
@@ -97,7 +129,6 @@ io.on('connection', (socket) => {
         type: 'system' 
       };
       
-      // Removed await joinMsg.save() to stop database clutter
       io.to(socket.currentRoom).emit('message', joinMsg);
       io.to(socket.currentRoom).emit('onlineUsers', Array.from(online.get(socket.currentRoom)));
       
@@ -109,7 +140,6 @@ io.on('connection', (socket) => {
 
   socket.on('chatMessage', async (text) => {
     if (!socket.user || !socket.currentRoom) return;
-
     try {
       const msg = new Message({ 
         room: socket.currentRoom, 
@@ -121,13 +151,16 @@ io.on('connection', (socket) => {
       const savedMsg = await msg.save();
       io.to(socket.currentRoom).emit('message', savedMsg);
     } catch (err) {
-      console.error("❌ Failed to save message:", err.message);
+      console.error("❌ Message Save Error:", err.message);
     }
   });
 
   socket.on('fileMessage', async (data) => {
     if (!socket.user || !socket.currentRoom) return;
     try {
+      // JSON.stringify prevents the [object Object] print in terminal
+      console.log("📂 File Data Received:", JSON.stringify(data));
+
       const msg = new Message({ 
         room: socket.currentRoom, 
         user: socket.user, 
@@ -138,7 +171,7 @@ io.on('connection', (socket) => {
       await msg.save();
       io.to(socket.currentRoom).emit('message', msg);
     } catch (err) {
-      console.error("❌ File save error:", err);
+      console.error("❌ File Message DB Error:", err.message);
     }
   });
 
@@ -153,7 +186,6 @@ io.on('connection', (socket) => {
         type: 'system' 
       };
 
-      // Removed await leaveMsg.save() to keep history clean
       io.to(socket.currentRoom).emit('message', leaveMsg);
       io.to(socket.currentRoom).emit('onlineUsers', Array.from(online.get(socket.currentRoom)));
     }
