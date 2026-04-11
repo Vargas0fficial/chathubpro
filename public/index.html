@@ -276,10 +276,11 @@
     const btn = event.currentTarget;
     btn.innerHTML = "Joining...";
 
-    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
-    audio.volume = 0; audio.play().catch(()=>{});
-
     activeRoom = room.toLowerCase();
+    
+    // UI Cleanup for new room
+    document.getElementById('messages').innerHTML = '';
+    
     document.getElementById('roomModal').classList.add('hidden');
     document.getElementById('sidebar').classList.remove('hidden');
     document.getElementById('mainHeader').classList.remove('hidden');
@@ -304,38 +305,38 @@
 
   function addMessage(msg) {
     const isMe = msg.user === username, isSys = msg.type === 'system';
+    
+    // MOBILE FIX: Prevent duplicate System messages if they already exist in the UI
+    if (isSys) {
+      const existingSys = Array.from(document.querySelectorAll('.system-msg-text'));
+      if (existingSys.some(el => el.innerText === msg.text)) return; 
+    }
+
     const time = new Date(msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const div = document.createElement('div');
-    div.id = `msg-${msg._id}`;
-    div.className = isSys ? "flex justify-center my-4 message-animate" : `msg-container flex gap-3 ${isMe ? 'flex-row-reverse' : 'flex-row'} items-end message-animate mb-6 group`;
+    div.id = `msg-${msg._id || Date.now()}`;
+    div.className = isSys ? "flex justify-center my-4 message-animate system-entry" : `msg-container flex gap-3 ${isMe ? 'flex-row-reverse' : 'flex-row'} items-end message-animate mb-6 group`;
     
     if (isSys) {
-      div.innerHTML = `<span class="bg-gray-100 dark:bg-gray-800 text-gray-500 text-[9px] font-bold px-4 py-1.5 rounded-full uppercase tracking-widest border dark:border-gray-700">${msg.text}</span>`;
+      div.innerHTML = `<span class="system-msg-text bg-gray-100 dark:bg-gray-800 text-gray-500 text-[9px] font-bold px-4 py-1.5 rounded-full uppercase tracking-widest border dark:border-gray-700">${msg.text}</span>`;
     } else {
       const others = (msg.seenBy || []).filter(u => u !== msg.user);
       const seenText = isMe && others.length > 0 ? `Seen by ${others.join(', ')}` : '';
       let content = "";
       
       if (msg.type === 'text') {
-          const isMentioned = msg.text.includes(`@${username}`);
           const processedText = msg.text.replace(/@(\w+)/g, (match, user) => {
               const isMeMentioned = user === username;
               return `<span class="px-1 rounded font-bold ${isMeMentioned ? 'bg-yellow-400 text-black mention-me' : 'text-blue-400'}">@${user}</span>`;
           });
-
-          if (isMentioned && !isMe) {
-              const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
-              audio.volume = 0.5; audio.play().catch(()=>{});
-          }
-
           content = `<div class="bubble-text ${isMe ? 'bg-blue-600 text-white shadow-blue-500/20' : 'bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm'} px-4 py-3 rounded-2xl text-sm shadow-md transition-all hover:scale-[1.01]">${processedText}</div>`;
       } else {
           if (msg.fileType?.startsWith('image/')) {
-              content = `<img src="${msg.fileUrl}" class="max-w-xs rounded-2xl border-4 border-white dark:border-gray-800 shadow-xl cursor-pointer hover:scale-[1.03] transition-transform" onclick="window.open('${msg.fileUrl}')">`;
+              content = `<img src="${msg.fileUrl}" alt="image attachment" class="max-w-xs rounded-2xl border-4 border-white dark:border-gray-800 shadow-xl cursor-pointer hover:scale-[1.03] transition-transform" onclick="window.open('${msg.fileUrl}')">`;
           } else {
               content = `<div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-2xl flex items-center gap-3 border dark:border-gray-700">
                              <div class="p-2 bg-blue-500/10 rounded-lg"><svg class="w-6 h-6 text-blue-500" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"></path></svg></div>
-                             <div class="flex flex-col overflow-hidden"><span class="text-xs font-bold truncate w-32">${msg.fileName || 'File'}</span><a href="${msg.fileUrl}" download class="text-[10px] text-blue-500 font-bold hover:underline">DOWNLOAD</a></div>
+                             <div class="flex flex-col overflow-hidden"><span class="file-name text-xs font-bold truncate w-32">${msg.fileName || 'File'}</span><a href="${msg.fileUrl}" download class="text-[10px] text-blue-500 font-bold hover:underline">DOWNLOAD</a></div>
                           </div>`;
           }
       }
@@ -359,14 +360,13 @@
     }
   }
 
-  // SEARCH WITH LIVE ANIMATION
+  // UPDATED SEARCH FUNCTION
   function searchMessages() {
     const q = document.getElementById('searchInput').value.toLowerCase();
     const icon = document.getElementById('searchIcon');
     const loader = document.getElementById('searchLoader');
     const msgBox = document.getElementById('messages');
 
-    // Show Loader State
     icon.classList.add('hidden');
     loader.classList.remove('hidden');
     msgBox.classList.add('search-loading-blur');
@@ -374,19 +374,23 @@
     clearTimeout(searchTimeout);
 
     searchTimeout = setTimeout(() => {
+      // 1. Filter User Messages
       document.querySelectorAll('.msg-container').forEach(el => {
-        const bubble = el.querySelector('.bubble-text') || el.querySelector('img');
-        if (bubble) {
-          const isVisible = (bubble.innerText || bubble.alt || "").toLowerCase().includes(q);
-          el.style.display = isVisible ? 'flex' : 'none';
-        }
+        const bubble = el.querySelector('.bubble-text') || el.querySelector('img') || el.querySelector('.file-name');
+        const textToSearch = bubble ? (bubble.innerText || bubble.alt || bubble.textContent || "") : "";
+        const isVisible = textToSearch.toLowerCase().includes(q);
+        el.style.display = isVisible ? 'flex' : 'none';
       });
 
-      // Reset UI state
+      // 2. Hide System Messages while searching
+      document.querySelectorAll('.system-entry').forEach(el => {
+        el.style.display = q === "" ? 'flex' : 'none';
+      });
+
       icon.classList.remove('hidden');
       loader.classList.add('hidden');
       msgBox.classList.remove('search-loading-blur');
-    }, 400); // 400ms delay for smooth transition
+    }, 350);
   }
 
   socket.on('message', addMessage);
@@ -474,5 +478,3 @@
     document.getElementById('usernameDisplay').innerText = username;
   }
 </script>
-</body>
-</html>
